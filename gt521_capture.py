@@ -33,11 +33,12 @@ _NACK = 0x31
 
 _IMAGE_WIDTH = 258
 _IMAGE_HEIGHT = 202
-_IMAGE_BYTES = _IMAGE_WIDTH * _IMAGE_HEIGHT  # 52116
-_DATA_PAYLOAD = 128
-_DATA_PACKETS = 407  # 407 * 128 == 52116
-# Per ADH data packet: 5A A5 + device(2) + packet#(2) + length(2) + data(128) + checksum(2)
-_DATA_PACKET_SIZE = 138
+_IMAGE_BYTES = _IMAGE_WIDTH * _IMAGE_HEIGHT  # 258 * 202 = 52116
+_DATA_PAYLOAD = 128  # usual payload per UART chunk
+_DATA_PACKETS = 407  # ~407 chunks (datasheet); 407*128=52096, image needs +20 bytes
+_IMAGE_EXTRA = _IMAGE_BYTES - (_DATA_PACKETS * _DATA_PAYLOAD)  # 20
+# Framed wire sizes on the UART line (header/checksum + 128-byte payload, or 148 on 1st)
+_DATA_FRAMED_SIZES = (134, 138, 148, 168)
 
 
 def _log(message: str, *, verbose: bool) -> None:
@@ -106,42 +107,114 @@ def _read_response(stream: BinaryIO, timeout: float) -> tuple[bool, int]:
         raise ValueError(f"Unexpected response code: 0x{response_code:04X}")
 
 
-def _read_one_data_packet(stream: BinaryIO, timeout: float, packet_index: int) -> bytes:
-    """Read a single 138-byte data packet; return 128-byte image payload."""
-    header = _read_exact(stream, 2, timeout)
-    if header != bytes(_DATA_START):
-        raise ValueError(
-            f"Bad data packet #{packet_index}: expected 5A A5, got {header.hex()}"
-        )
-    _read_exact(stream, 2, timeout)  # device id
-    _read_exact(stream, 4, timeout)  # packet number + valid data length
-    payload = _read_exact(stream, _DATA_PAYLOAD, timeout)
-    _read_exact(stream, 2, timeout)  # checksum
-    return payload
+def _read_image_stream(stream: BinaryIO, timeout: float, *, verbose: bool = True) -> bytes:
+    """Read the full UART image transfer, then parse into 52116 image bytes."""
+    _log("  Receiving image stream (hold finger still)...", verbose=verbose)
+    buf = bytearray()
+    deadline = time.monotonic() + timeout
+    idle_rounds = 0
+    last_reported = 0
 
+    while time.monotonic() < deadline:
+        waiting = getattr(stream, "in_waiting", 0) or 0
+        if waiting:
+            buf.extend(stream.read(waiting))
+            idle_rounds = 0
+            if verbose and len(buf) - last_reported >= 2500:
+                print(
+                    f"\r  Downloading image: {len(buf)} bytes received "
+                    f"(target ~{_DATA_PACKETS * 134})...",
+                    end="",
+                    flush=True,
+                )
+                last_reported = len(buf)
+        else:
+            idle_rounds += 1
+            if len(buf) >= 52_000 and idle_rounds >= 5:
+                break
+            if idle_rounds >= 25 and len(buf) > 0:
+                break
+            time.sleep(0.1)
 
-def _read_image_packets(
-    stream: BinaryIO, timeout: float, *, verbose: bool = True
-) -> bytes:
-    """Read 407 data packets (128 payload bytes each) after GetImage."""
-    image = bytearray()
-    progress_step = max(1, _DATA_PACKETS // 20)
-    for packet_index in range(_DATA_PACKETS):
-        image.extend(_read_one_data_packet(stream, timeout, packet_index))
-        if verbose and (
-            packet_index == 0
-            or packet_index + 1 == _DATA_PACKETS
-            or (packet_index + 1) % progress_step == 0
-        ):
-            print(
-                f"\r  Downloading image: packet {packet_index + 1}/{_DATA_PACKETS} "
-                f"({len(image)}/{_IMAGE_BYTES} bytes)",
-                end="",
-                flush=True,
-            )
     if verbose:
+        print(f"\r  Downloading image: {len(buf)} bytes received.          ", flush=True)
         print(flush=True)
-    return bytes(image[:_IMAGE_BYTES])
+
+    return _parse_image_buffer(bytes(buf))
+
+
+def _try_framed_all(buf: bytes, start: int, frame_size: int, payload_skip: int) -> bytes | None:
+    """All 407 chunks are framed with the same wire size."""
+    image = bytearray()
+    for index in range(_DATA_PACKETS):
+        base = start + index * frame_size
+        if base + payload_skip + _DATA_PAYLOAD > len(buf):
+            return None
+        if buf[base] != _DATA_START[0] or buf[base + 1] != _DATA_START[1]:
+            return None
+        image.extend(buf[base + payload_skip : base + payload_skip + _DATA_PAYLOAD])
+    return bytes(image) if len(image) == _IMAGE_BYTES else None
+
+
+def _try_first_framed_then_raw(buf: bytes, start: int, first_size: int, skip: int) -> bytes | None:
+    """First chunk has a header; remaining 406 chunks are raw 128-byte payloads."""
+    if start + skip + _DATA_PAYLOAD > len(buf):
+        return None
+    image = bytearray(buf[start + skip : start + skip + _DATA_PAYLOAD])
+    pos = start + first_size
+    for _ in range(_DATA_PACKETS - 1):
+        if pos + _DATA_PAYLOAD > len(buf):
+            return None
+        image.extend(buf[pos : pos + _DATA_PAYLOAD])
+        pos += _DATA_PAYLOAD
+    return bytes(image) if len(image) == _IMAGE_BYTES else None
+
+
+def _try_first_148_then_raw_128(buf: bytes, start: int, first_wire_size: int, skip: int) -> bytes | None:
+    """First payload is 148 bytes, then 406 x 128 bytes (148 + 406*128 = 52116)."""
+    first_payload = _DATA_PAYLOAD + _IMAGE_EXTRA  # 148
+    if start + skip + first_payload > len(buf):
+        return None
+    image = bytearray(buf[start + skip : start + skip + first_payload])
+    pos = start + first_wire_size
+    for _ in range(_DATA_PACKETS - 1):
+        if pos + _DATA_PAYLOAD > len(buf):
+            return None
+        image.extend(buf[pos : pos + _DATA_PAYLOAD])
+        pos += _DATA_PAYLOAD
+    return bytes(image) if len(image) == _IMAGE_BYTES else None
+
+
+def _parse_image_buffer(buf: bytes) -> bytes:
+    """Extract 52116 image bytes (258x202) from the sensor download stream."""
+    start = buf.find(bytes(_DATA_START))
+    if start < 0:
+        head = buf[:20].hex() if buf else "empty"
+        raise ValueError(
+            f"Image stream missing 5A A5 marker. Received {len(buf)} bytes, head={head}"
+        )
+
+    for frame_size in _DATA_FRAMED_SIZES:
+        for payload_skip in (4, 8, 12, 20):
+            if payload_skip + _DATA_PAYLOAD > frame_size:
+                continue
+            result = _try_framed_all(buf, start, frame_size, payload_skip)
+            if result is not None:
+                return result
+
+    for first_size in _DATA_FRAMED_SIZES:
+        for skip in (4, 8, 12, 20):
+            result = _try_first_framed_then_raw(buf, start, first_size, skip)
+            if result is not None:
+                return result
+            result = _try_first_148_then_raw_128(buf, start, first_size, skip)
+            if result is not None:
+                return result
+
+    raise ValueError(
+        f"Could not parse image from {len(buf)}-byte stream "
+        f"(start index {start}). Try capture again with finger held still."
+    )
 
 
 def _send_command(
@@ -236,7 +309,7 @@ def capture_grayscale(
             if not ok:
                 raise RuntimeError("GetImage command was rejected by the sensor.")
 
-            raw = _read_image_packets(ser, image_timeout, verbose=verbose)
+            raw = _read_image_stream(ser, image_timeout, verbose=verbose)
             _log(
                 f"Image download complete ({len(raw)} bytes, "
                 f"{_IMAGE_WIDTH}x{_IMAGE_HEIGHT}).",
