@@ -271,7 +271,7 @@ def capture_grayscale(
     Typical use on Raspberry Pi: port="/dev/ttyUSB1".
     """
     # 9600 baud + ~55 KB image data needs well over 30s on the wire.
-    image_timeout = max(timeout, 90.0)
+    image_timeout = max(timeout, 120.0)
 
     _log(f"Connecting to sensor on {port} @ {baud} baud...", verbose=verbose)
 
