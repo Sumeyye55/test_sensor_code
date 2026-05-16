@@ -1,25 +1,20 @@
 import argparse
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 import cv2
 import numpy as np
 from cryptography.fernet import Fernet
 
-
-DB_PATH = "/Users/maryamasgarova/Desktop/graduation/matching algo/fingerprint.db"
-DEFAULT_USER_ID = "user_101"
-DEFAULT_IMAGE_PATH = "/Users/maryamasgarova/Desktop/graduation/matching algo/data_check/same_1/101_6.tif"
+from config import BAUD_RATE, DB_PATH, DEFAULT_USER_ID, SERIAL_PORT
 
 
-def load_tif_bgr(path: str) -> np.ndarray:
-    img = cv2.imread(path)
-    if img is None:
-        raise FileNotFoundError(f"Could not load image: {path}")
-    if len(img.shape) == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    return img
+def capture_fingerprint_bgr(port: str = SERIAL_PORT, baud: int = BAUD_RATE) -> np.ndarray:
+    from gt521_capture import capture_bgr
+
+    print(f"Place finger on sensor ({port})...")
+    return capture_bgr(port=port, baud=baud)
 
 
 def preprocess_image(image: np.ndarray) -> np.ndarray:
@@ -62,28 +57,14 @@ def _encrypt_blob(blob: bytes, cipher: Fernet) -> bytes:
     return cipher.encrypt(blob)
 
 
-def load_fingerprint_bgr(
-    *,
-    image_path: str | None = None,
-    serial_port: str | None = None,
-) -> np.ndarray:
-    if serial_port:
-        from gt521_capture import capture_bgr
-
-        return capture_bgr(port=serial_port)
-    if image_path:
-        return load_tif_bgr(image_path)
-    raise ValueError("Provide either image_path or serial_port.")
-
-
 def register_user(
     user_id: str,
     db_path: str = DB_PATH,
     *,
-    image_path: str | None = None,
-    serial_port: str | None = None,
+    port: str = SERIAL_PORT,
+    baud: int = BAUD_RATE,
 ) -> tuple[int, int]:
-    image = load_fingerprint_bgr(image_path=image_path, serial_port=serial_port)
+    image = capture_fingerprint_bgr(port=port, baud=baud)
     keypoints, descriptors = extract_features(image)
     cipher = _get_cipher()
 
@@ -98,7 +79,7 @@ def register_user(
                 user_id,
                 _encrypt_blob(_array_to_blob(keypoints), cipher),
                 _encrypt_blob(_array_to_blob(descriptors), cipher),
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
             ),
         )
         conn.commit()
@@ -110,42 +91,24 @@ def register_user(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Register a user's fingerprint features into SQLite."
+        description="Register a user from a live GT-521Fxx sensor capture."
     )
-    parser.add_argument(
-        "--user-id",
-        default=DEFAULT_USER_ID,
-        help=f"Unique user ID (default: {DEFAULT_USER_ID})",
-    )
-    parser.add_argument(
-        "--image-path",
-        default=None,
-        help="Path to fingerprint image file (use instead of --port).",
-    )
-    parser.add_argument(
-        "--port",
-        default=None,
-        help="Serial port for GT-521Fxx sensor (e.g. /dev/ttyUSB1 on Raspberry Pi).",
-    )
-    parser.add_argument(
-        "--db-path",
-        default=DB_PATH,
-        help=f"SQLite path (default: {DB_PATH})",
-    )
+    parser.add_argument("--user-id", default=DEFAULT_USER_ID)
+    parser.add_argument("--port", default=SERIAL_PORT)
+    parser.add_argument("--baud", type=int, default=BAUD_RATE)
+    parser.add_argument("--db-path", default=DB_PATH)
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    if not args.port and not args.image_path:
-        args.image_path = DEFAULT_IMAGE_PATH
     kp_count, desc_count = register_user(
         args.user_id,
         args.db_path,
-        image_path=args.image_path,
-        serial_port=args.port,
+        port=args.port,
+        baud=args.baud,
     )
     print(
-        f"User '{args.user_id}' registered successfully. "
+        f"User '{args.user_id}' registered from sensor. "
         f"Stored keypoints: {kp_count}, descriptors: {desc_count}."
     )

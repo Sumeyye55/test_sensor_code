@@ -6,13 +6,10 @@ import cv2
 import numpy as np
 from cryptography.fernet import Fernet
 
-from registration import extract_features, load_fingerprint_bgr
+from config import BAUD_RATE, DB_PATH, DEFAULT_USER_ID, SERIAL_PORT
+from registration import capture_fingerprint_bgr, extract_features
 
-
-DB_PATH = "/Users/maryamasgarova/Desktop/graduation/matching algo/fingerprint.db"
-DEFAULT_USER_ID = "user_101"
-DEFAULT_IMAGE_PATH = "/Users/maryamasgarova/Desktop/graduation/matching algo/data_check/different_7/103_1.tif"
-# Match score is len(matches)/min(keypoints)*100 (same as matching.ipynb). >= 1: accept, < 1: reject.
+# Match score is len(matches)/min(keypoints)*100. >= 1.0: accept, < 1.0: reject.
 AUTH_SCORE_THRESHOLD = 1.0
 
 
@@ -64,12 +61,6 @@ def compute_match_score(
     db_keypoints: np.ndarray,
     db_descriptors: np.ndarray,
 ) -> float:
-    """Same pipeline as matching.ipynb (cells 4–8).
-
-    Notebook: image 1 = sample (enrolled), image 2 = check (probe).
-    flann.knnMatch(descriptors_1, descriptors_2) → queryIdx indexes image 1,
-    trainIdx indexes image 2. Here descriptors_1 = DB, descriptors_2 = probe.
-    """
     if probe_descriptors.size == 0 or db_descriptors.size == 0:
         return 0.0
 
@@ -106,12 +97,12 @@ def compute_match_score(
 
 def authenticate(
     user_id: str,
-    db_path: str,
+    db_path: str = DB_PATH,
     *,
-    image_path: str | None = None,
-    serial_port: str | None = None,
+    port: str = SERIAL_PORT,
+    baud: int = BAUD_RATE,
 ) -> tuple[float | None, bool]:
-    probe_image = load_fingerprint_bgr(image_path=image_path, serial_port=serial_port)
+    probe_image = capture_fingerprint_bgr(port=port, baud=baud)
     probe_keypoints, probe_descriptors = extract_features(probe_image)
     stored = fetch_user_features(user_id, db_path)
 
@@ -129,40 +120,22 @@ def authenticate(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Authenticate a fingerprint image against encrypted DB features."
+        description="Authenticate a live sensor capture against encrypted DB features."
     )
-    parser.add_argument(
-        "--user-id",
-        default=DEFAULT_USER_ID,
-        help=f"User ID to authenticate against. Default: {DEFAULT_USER_ID}",
-    )
-    parser.add_argument(
-        "--image-path",
-        default=None,
-        help="Path to input fingerprint image (use instead of --port).",
-    )
-    parser.add_argument(
-        "--port",
-        default=None,
-        help="Serial port for GT-521Fxx sensor (e.g. /dev/ttyUSB1 on Raspberry Pi).",
-    )
-    parser.add_argument(
-        "--db-path",
-        default=DB_PATH,
-        help=f"SQLite path (default: {DB_PATH})",
-    )
+    parser.add_argument("--user-id", default=DEFAULT_USER_ID)
+    parser.add_argument("--port", default=SERIAL_PORT)
+    parser.add_argument("--baud", type=int, default=BAUD_RATE)
+    parser.add_argument("--db-path", default=DB_PATH)
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    if not args.port and not args.image_path:
-        args.image_path = DEFAULT_IMAGE_PATH
     score, ok = authenticate(
         args.user_id,
         args.db_path,
-        image_path=args.image_path,
-        serial_port=args.port,
+        port=args.port,
+        baud=args.baud,
     )
     if score is None:
         print("fail")

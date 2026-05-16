@@ -1,0 +1,36 @@
+flowchart TB
+    subgraph hardware [Hardware]
+        PI[Raspberry Pi]
+        SENS[GT-521F52 sensor]
+        PI <-->|UART /dev/ttyUSB1| SENS
+    end
+
+    subgraph capture [gt521_capture.py]
+        UART[Serial commands + image packets]
+        IMG[258x202 grayscale image]
+        UART --> IMG
+    end
+
+    subgraph features [registration.py]
+        CLAHE[CLAHE preprocessing]
+        SIFT[SIFT keypoints + descriptors]
+        IMG --> CLAHE --> SIFT
+    end
+
+    subgraph storage [fingerprint.db]
+        ENC[Fernet encryption]
+        SQL[(user_fingerprints)]
+        SIFT --> ENC --> SQL
+    end
+
+    subgraph auth [authentication.py]
+        PROBE[New sensor capture]
+        MATCH[FLANN + Lowe + RANSAC]
+        SCORE[Score >= 1.0?]
+        PROBE --> MATCH
+        SQL --> MATCH
+        MATCH --> SCORE
+    end
+
+    SENS --> capture
+    storage --> auth
