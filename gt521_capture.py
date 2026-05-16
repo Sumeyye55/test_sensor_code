@@ -39,8 +39,10 @@ _DATA_PACKETS = 407  # ~407 chunks (datasheet); 407*128=52096, image needs +20 b
 _IMAGE_EXTRA = _IMAGE_BYTES - (_DATA_PACKETS * _DATA_PAYLOAD)  # 20
 # Framed wire sizes on the UART line (header/checksum + 128-byte payload, or 148 on 1st)
 _DATA_FRAMED_SIZES = (134, 138, 148, 168)
-# UART bytes to wait for after GetImage (407 chunks × ~134 B/frame)
-_EXPECTED_WIRE_MIN = _DATA_PACKETS * 134  # 54538
+# Observed on GT-521F52 @ 9600: ~52122 wire bytes = 6-byte header + 52116 image
+_WIRE_BYTES_TARGET = _IMAGE_BYTES + 6  # 52122
+# Upper bound if the module sends fully framed 407 packets (407 × 134)
+_WIRE_BYTES_MAX = _DATA_PACKETS * 134  # 54538
 
 
 def _log(message: str, *, verbose: bool) -> None:
@@ -113,7 +115,7 @@ def _read_image_stream(stream: BinaryIO, timeout: float, *, verbose: bool = True
     """Read the full UART image transfer, then parse into 52116 image bytes."""
     _log(
         f"  Receiving image stream — hold finger still "
-        f"(~{_EXPECTED_WIRE_MIN} bytes, can take up to {timeout:.0f}s at 9600 baud)...",
+        f"(~{_WIRE_BYTES_TARGET} bytes, up to {timeout:.0f}s at 9600 baud)...",
         verbose=verbose,
     )
     buf = bytearray()
@@ -124,8 +126,7 @@ def _read_image_stream(stream: BinaryIO, timeout: float, *, verbose: bool = True
         waiting = getattr(stream, "in_waiting", 0) or 0
         if waiting:
             buf.extend(stream.read(waiting))
-        elif len(buf) >= _EXPECTED_WIRE_MIN:
-            # Allow a short tail for the last bytes, then stop if nothing more arrives.
+        elif len(buf) >= _WIRE_BYTES_TARGET:
             time.sleep(0.25)
             extra = getattr(stream, "in_waiting", 0) or 0
             if extra:
@@ -135,10 +136,10 @@ def _read_image_stream(stream: BinaryIO, timeout: float, *, verbose: bool = True
         else:
             time.sleep(0.05)
 
-        if verbose and len(buf) - last_reported >= 3000:
-            pct = min(100, (100 * len(buf)) // _EXPECTED_WIRE_MIN)
+        if verbose and len(buf) - last_reported >= 2500:
+            pct = min(100, (100 * len(buf)) // _WIRE_BYTES_TARGET)
             print(
-                f"\r  Downloading image: {len(buf)}/{_EXPECTED_WIRE_MIN} bytes ({pct}%)...",
+                f"\r  Downloading image: {len(buf)}/{_WIRE_BYTES_TARGET} bytes ({pct}%)...",
                 end="",
                 flush=True,
             )
@@ -146,17 +147,17 @@ def _read_image_stream(stream: BinaryIO, timeout: float, *, verbose: bool = True
 
     if verbose:
         print(
-            f"\r  Downloading image: {len(buf)}/{_EXPECTED_WIRE_MIN} bytes received.          ",
+            f"\r  Downloading image: {len(buf)}/{_WIRE_BYTES_TARGET} bytes ({min(100, (100 * len(buf)) // _WIRE_BYTES_TARGET)}%).          ",
             flush=True,
         )
         print(flush=True)
 
-    if len(buf) < _EXPECTED_WIRE_MIN:
+    if len(buf) < _WIRE_BYTES_TARGET:
         raise ValueError(
             f"Incomplete image download: received {len(buf)} bytes, "
-            f"expected about {_EXPECTED_WIRE_MIN}. "
-            "Keep your finger on the sensor until the percentage reaches 100%. "
-            "At 9600 baud the transfer takes roughly 50–60 seconds."
+            f"expected at least {_WIRE_BYTES_TARGET} "
+            f"(image {_IMAGE_BYTES} + header). "
+            "Keep your finger on the sensor until the progress shows 100%."
         )
 
     return _parse_image_buffer(bytes(buf))
@@ -204,6 +205,15 @@ def _try_first_148_then_raw_128(buf: bytes, start: int, first_wire_size: int, sk
     return bytes(image) if len(image) == _IMAGE_BYTES else None
 
 
+def _try_compact_image_block(buf: bytes, start: int) -> bytes | None:
+    """Single 5A A5 header then 52116 raw pixels (common on GT-521F52)."""
+    for skip in (4, 6, 8, 12, 20):
+        end = start + skip + _IMAGE_BYTES
+        if end <= len(buf):
+            return bytes(buf[start + skip : end])
+    return None
+
+
 def _parse_image_buffer(buf: bytes) -> bytes:
     """Extract 52116 image bytes (258x202) from the sensor download stream."""
     start = buf.find(bytes(_DATA_START))
@@ -212,6 +222,10 @@ def _parse_image_buffer(buf: bytes) -> bytes:
         raise ValueError(
             f"Image stream missing 5A A5 marker. Received {len(buf)} bytes, head={head}"
         )
+
+    compact = _try_compact_image_block(buf, start)
+    if compact is not None:
+        return compact
 
     for frame_size in _DATA_FRAMED_SIZES:
         for payload_skip in (4, 8, 12, 20):
@@ -271,7 +285,7 @@ def capture_grayscale(
     Typical use on Raspberry Pi: port="/dev/ttyUSB1".
     """
     # 9600 baud + ~55 KB image data needs well over 30s on the wire.
-    image_timeout = max(timeout, 120.0)
+    image_timeout = max(timeout, 90.0)
 
     _log(f"Connecting to sensor on {port} @ {baud} baud...", verbose=verbose)
 
