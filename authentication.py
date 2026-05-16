@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from cryptography.fernet import Fernet
 
-from registration import extract_features, load_tif_bgr
+from registration import extract_features, load_fingerprint_bgr
 
 
 DB_PATH = "/Users/maryamasgarova/Desktop/graduation/matching algo/fingerprint.db"
@@ -105,9 +105,13 @@ def compute_match_score(
 
 
 def authenticate(
-    user_id: str, image_path: str, db_path: str
+    user_id: str,
+    db_path: str,
+    *,
+    image_path: str | None = None,
+    serial_port: str | None = None,
 ) -> tuple[float | None, bool]:
-    probe_image = load_tif_bgr(image_path)
+    probe_image = load_fingerprint_bgr(image_path=image_path, serial_port=serial_port)
     probe_keypoints, probe_descriptors = extract_features(probe_image)
     stored = fetch_user_features(user_id, db_path)
 
@@ -134,8 +138,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--image-path",
-        default=DEFAULT_IMAGE_PATH,
-        help=f"Path to input fingerprint image. Default: {DEFAULT_IMAGE_PATH}",
+        default=None,
+        help="Path to input fingerprint image (use instead of --port).",
+    )
+    parser.add_argument(
+        "--port",
+        default=None,
+        help="Serial port for GT-521Fxx sensor (e.g. /dev/ttyUSB1 on Raspberry Pi).",
     )
     parser.add_argument(
         "--db-path",
@@ -147,7 +156,14 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    score, ok = authenticate(args.user_id, args.image_path, args.db_path)
+    if not args.port and not args.image_path:
+        args.image_path = DEFAULT_IMAGE_PATH
+    score, ok = authenticate(
+        args.user_id,
+        args.db_path,
+        image_path=args.image_path,
+        serial_port=args.port,
+    )
     if score is None:
         print("fail")
     else:

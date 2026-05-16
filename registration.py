@@ -62,12 +62,28 @@ def _encrypt_blob(blob: bytes, cipher: Fernet) -> bytes:
     return cipher.encrypt(blob)
 
 
+def load_fingerprint_bgr(
+    *,
+    image_path: str | None = None,
+    serial_port: str | None = None,
+) -> np.ndarray:
+    if serial_port:
+        from gt521_capture import capture_bgr
+
+        return capture_bgr(port=serial_port)
+    if image_path:
+        return load_tif_bgr(image_path)
+    raise ValueError("Provide either image_path or serial_port.")
+
+
 def register_user(
     user_id: str,
-    image_path: str,
     db_path: str = DB_PATH,
+    *,
+    image_path: str | None = None,
+    serial_port: str | None = None,
 ) -> tuple[int, int]:
-    image = load_tif_bgr(image_path)
+    image = load_fingerprint_bgr(image_path=image_path, serial_port=serial_port)
     keypoints, descriptors = extract_features(image)
     cipher = _get_cipher()
 
@@ -103,8 +119,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--image-path",
-        default=DEFAULT_IMAGE_PATH,
-        help=f"Path to raw fingerprint image (.tif or other OpenCV-readable image). Default: {DEFAULT_IMAGE_PATH}",
+        default=None,
+        help="Path to fingerprint image file (use instead of --port).",
+    )
+    parser.add_argument(
+        "--port",
+        default=None,
+        help="Serial port for GT-521Fxx sensor (e.g. /dev/ttyUSB1 on Raspberry Pi).",
     )
     parser.add_argument(
         "--db-path",
@@ -116,7 +137,14 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    kp_count, desc_count = register_user(args.user_id, args.image_path, args.db_path)
+    if not args.port and not args.image_path:
+        args.image_path = DEFAULT_IMAGE_PATH
+    kp_count, desc_count = register_user(
+        args.user_id,
+        args.db_path,
+        image_path=args.image_path,
+        serial_port=args.port,
+    )
     print(
         f"User '{args.user_id}' registered successfully. "
         f"Stored keypoints: {kp_count}, descriptors: {desc_count}."
