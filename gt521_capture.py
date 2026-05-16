@@ -26,13 +26,13 @@ _CMD_CLOSE = 0x02
 _CMD_CMOS_LED = 0x12
 _CMD_IS_PRESS = 0x26
 _CMD_CAPTURE = 0x60
-_CMD_GET_IMAGE = 0x62
+_CMD_GET_IMAGE = 0x63
 
 _ACK = 0x30
 _NACK = 0x31
 
-_IMAGE_WIDTH = 258
-_IMAGE_HEIGHT = 202
+_IMAGE_WIDTH = 160
+_IMAGE_HEIGHT = 120
 _IMAGE_BYTES = _IMAGE_WIDTH * _IMAGE_HEIGHT  # 258 * 202 = 52116
 _DATA_PAYLOAD = 128  # usual payload per UART chunk
 _DATA_PACKETS = 407  # ~407 chunks (datasheet); 407*128=52096, image needs +20 bytes
@@ -374,7 +374,7 @@ def capture_grayscale(
             if not ok:
                 raise RuntimeError("GetImage command was rejected by the sensor.")
 
-            raw = _read_image_stream(ser, image_timeout, verbose=verbose)
+            raw = _read_image_stream(ser, _IMAGE_BYTES, image_timeout)
             _log(
                 f"Image download complete ({len(raw)} bytes, "
                 f"{_IMAGE_WIDTH}x{_IMAGE_HEIGHT}).",
