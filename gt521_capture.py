@@ -39,6 +39,8 @@ _DATA_PACKETS = 407  # ~407 chunks (datasheet); 407*128=52096, image needs +20 b
 _IMAGE_EXTRA = _IMAGE_BYTES - (_DATA_PACKETS * _DATA_PAYLOAD)  # 20
 # Framed wire sizes on the UART line (header/checksum + 128-byte payload, or 148 on 1st)
 _DATA_FRAMED_SIZES = (134, 138, 148, 168)
+# UART bytes to wait for after GetImage (407 chunks × ~134 B/frame)
+_EXPECTED_WIRE_MIN = _DATA_PACKETS * 134  # 54538
 
 
 def _log(message: str, *, verbose: bool) -> None:
@@ -109,36 +111,53 @@ def _read_response(stream: BinaryIO, timeout: float) -> tuple[bool, int]:
 
 def _read_image_stream(stream: BinaryIO, timeout: float, *, verbose: bool = True) -> bytes:
     """Read the full UART image transfer, then parse into 52116 image bytes."""
-    _log("  Receiving image stream (hold finger still)...", verbose=verbose)
+    _log(
+        f"  Receiving image stream — hold finger still "
+        f"(~{_EXPECTED_WIRE_MIN} bytes, can take up to {timeout:.0f}s at 9600 baud)...",
+        verbose=verbose,
+    )
     buf = bytearray()
     deadline = time.monotonic() + timeout
-    idle_rounds = 0
     last_reported = 0
 
     while time.monotonic() < deadline:
         waiting = getattr(stream, "in_waiting", 0) or 0
         if waiting:
             buf.extend(stream.read(waiting))
-            idle_rounds = 0
-            if verbose and len(buf) - last_reported >= 2500:
-                print(
-                    f"\r  Downloading image: {len(buf)} bytes received "
-                    f"(target ~{_DATA_PACKETS * 134})...",
-                    end="",
-                    flush=True,
-                )
-                last_reported = len(buf)
+        elif len(buf) >= _EXPECTED_WIRE_MIN:
+            # Allow a short tail for the last bytes, then stop if nothing more arrives.
+            time.sleep(0.25)
+            extra = getattr(stream, "in_waiting", 0) or 0
+            if extra:
+                buf.extend(stream.read(extra))
+            else:
+                break
         else:
-            idle_rounds += 1
-            if len(buf) >= 52_000 and idle_rounds >= 5:
-                break
-            if idle_rounds >= 25 and len(buf) > 0:
-                break
-            time.sleep(0.1)
+            time.sleep(0.05)
+
+        if verbose and len(buf) - last_reported >= 3000:
+            pct = min(100, (100 * len(buf)) // _EXPECTED_WIRE_MIN)
+            print(
+                f"\r  Downloading image: {len(buf)}/{_EXPECTED_WIRE_MIN} bytes ({pct}%)...",
+                end="",
+                flush=True,
+            )
+            last_reported = len(buf)
 
     if verbose:
-        print(f"\r  Downloading image: {len(buf)} bytes received.          ", flush=True)
+        print(
+            f"\r  Downloading image: {len(buf)}/{_EXPECTED_WIRE_MIN} bytes received.          ",
+            flush=True,
+        )
         print(flush=True)
+
+    if len(buf) < _EXPECTED_WIRE_MIN:
+        raise ValueError(
+            f"Incomplete image download: received {len(buf)} bytes, "
+            f"expected about {_EXPECTED_WIRE_MIN}. "
+            "Keep your finger on the sensor until the percentage reaches 100%. "
+            "At 9600 baud the transfer takes roughly 50–60 seconds."
+        )
 
     return _parse_image_buffer(bytes(buf))
 
@@ -251,7 +270,8 @@ def capture_grayscale(
 
     Typical use on Raspberry Pi: port="/dev/ttyUSB1".
     """
-    image_timeout = max(timeout, 30.0)
+    # 9600 baud + ~55 KB image data needs well over 30s on the wire.
+    image_timeout = max(timeout, 90.0)
 
     _log(f"Connecting to sensor on {port} @ {baud} baud...", verbose=verbose)
 
