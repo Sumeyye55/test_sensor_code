@@ -205,8 +205,35 @@ def _try_first_148_then_raw_128(buf: bytes, start: int, first_wire_size: int, sk
     return bytes(image) if len(image) == _IMAGE_BYTES else None
 
 
+def _extract_sequential_payloads(buf: bytes, start: int) -> bytes | None:
+    """Concatenate 407 x 128-byte payloads, skipping headers/checksums between chunks."""
+    for header_skip in (4, 6, 8, 12, 20, 26):
+        image = bytearray()
+        pos = start + header_skip
+        if pos + 2 <= len(buf) and buf[pos] == _DATA_START[0] and buf[pos + 1] == _DATA_START[1]:
+            pos += 4
+
+        ok = True
+        for _ in range(_DATA_PACKETS):
+            if len(image) >= _IMAGE_BYTES:
+                break
+            if pos + 2 <= len(buf) and buf[pos] == _DATA_START[0] and buf[pos + 1] == _DATA_START[1]:
+                pos += 4
+            if pos + _DATA_PAYLOAD > len(buf):
+                ok = False
+                break
+            image.extend(buf[pos : pos + _DATA_PAYLOAD])
+            pos += _DATA_PAYLOAD
+            if pos + 2 <= len(buf) and buf[pos] != _DATA_START[0]:
+                pos += 2
+
+        if ok and len(image) == _IMAGE_BYTES:
+            return bytes(image)
+    return None
+
+
 def _try_compact_image_block(buf: bytes, start: int) -> bytes | None:
-    """Single 5A A5 header then 52116 raw pixels (common on GT-521F52)."""
+    """Last resort: one contiguous block (often produces stripe artifacts if wrong)."""
     for skip in (4, 6, 8, 12, 20):
         end = start + skip + _IMAGE_BYTES
         if end <= len(buf):
@@ -223,9 +250,9 @@ def _parse_image_buffer(buf: bytes) -> bytes:
             f"Image stream missing 5A A5 marker. Received {len(buf)} bytes, head={head}"
         )
 
-    compact = _try_compact_image_block(buf, start)
-    if compact is not None:
-        return compact
+    sequential = _extract_sequential_payloads(buf, start)
+    if sequential is not None:
+        return sequential
 
     for frame_size in _DATA_FRAMED_SIZES:
         for payload_skip in (4, 8, 12, 20):
@@ -243,6 +270,10 @@ def _parse_image_buffer(buf: bytes) -> bytes:
             result = _try_first_148_then_raw_128(buf, start, first_size, skip)
             if result is not None:
                 return result
+
+    compact = _try_compact_image_block(buf, start)
+    if compact is not None:
+        return compact
 
     raise ValueError(
         f"Could not parse image from {len(buf)}-byte stream "
