@@ -10,11 +10,15 @@ from cryptography.fernet import Fernet
 from config import BAUD_RATE, DB_PATH, DEFAULT_USER_ID, SERIAL_PORT
 
 
-def capture_fingerprint_bgr(port: str = SERIAL_PORT, baud: int = BAUD_RATE) -> np.ndarray:
+def capture_fingerprint_bgr(
+    port: str = SERIAL_PORT,
+    baud: int = BAUD_RATE,
+    *,
+    verbose: bool = True,
+) -> np.ndarray:
     from gt521_capture import capture_bgr
 
-    print(f"Place finger on sensor ({port})...")
-    return capture_bgr(port=port, baud=baud)
+    return capture_bgr(port=port, baud=baud, verbose=verbose)
 
 
 def preprocess_image(image: np.ndarray) -> np.ndarray:
@@ -63,9 +67,14 @@ def register_user(
     *,
     port: str = SERIAL_PORT,
     baud: int = BAUD_RATE,
+    verbose: bool = True,
 ) -> tuple[int, int]:
-    image = capture_fingerprint_bgr(port=port, baud=baud)
+    image = capture_fingerprint_bgr(port=port, baud=baud, verbose=verbose)
+    if verbose:
+        print("Extracting SIFT features...", flush=True)
     keypoints, descriptors = extract_features(image)
+    if verbose:
+        print(f"Saving encrypted features for '{user_id}'...", flush=True)
     cipher = _get_cipher()
 
     conn = sqlite3.connect(db_path)

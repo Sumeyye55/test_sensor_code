@@ -101,9 +101,14 @@ def authenticate(
     *,
     port: str = SERIAL_PORT,
     baud: int = BAUD_RATE,
+    verbose: bool = True,
 ) -> tuple[float | None, bool]:
-    probe_image = capture_fingerprint_bgr(port=port, baud=baud)
+    probe_image = capture_fingerprint_bgr(port=port, baud=baud, verbose=verbose)
+    if verbose:
+        print("Extracting SIFT features from probe...", flush=True)
     probe_keypoints, probe_descriptors = extract_features(probe_image)
+    if verbose:
+        print(f"Loading enrolled data for '{user_id}'...", flush=True)
     stored = fetch_user_features(user_id, db_path)
 
     if stored is None:
@@ -115,6 +120,8 @@ def authenticate(
     )
     scaled_score = ratio * 100.0
     ok = scaled_score >= AUTH_SCORE_THRESHOLD
+    if verbose:
+        print(f"Match score: {scaled_score:.2f} (threshold {AUTH_SCORE_THRESHOLD})", flush=True)
     return scaled_score, ok
 
 
