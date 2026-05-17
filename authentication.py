@@ -122,9 +122,20 @@ def authenticate(
     stored = fetch_user_features(user_id, db_path)
 
     if stored is None:
+        if verbose:
+            print(
+                f"fail: no enrollment for user_id='{user_id}' in {db_path}. "
+                "Use the same --user-id as registration.",
+                flush=True,
+            )
         return None, False
 
     db_keypoints, db_descriptors = stored
+    if verbose:
+        print(
+            f"Keypoints: probe={len(probe_keypoints)}, enrolled={len(db_keypoints)}",
+            flush=True,
+        )
     if (
         len(probe_keypoints) < MIN_KEYPOINTS
         or len(db_keypoints) < MIN_KEYPOINTS
@@ -133,8 +144,8 @@ def authenticate(
     ):
         if verbose:
             print(
-                f"Too few features (need >={MIN_KEYPOINTS} keypoints). "
-                "Sensor image may be corrupt — check capture PNG.",
+                f"fail: too few features (need >={MIN_KEYPOINTS} on both sides). "
+                "Re-check gt521_capture.py / test.png, then re-register.",
                 flush=True,
             )
         return 0.0, False
@@ -144,17 +155,28 @@ def authenticate(
     )
     scaled_score = ratio * 100.0
     match_count = int(round(ratio * min(len(probe_keypoints), len(db_keypoints))))
-    ok = (
-        scaled_score >= AUTH_SCORE_THRESHOLD
-        and match_count >= MIN_MATCHES
-    )
+    score_ok = scaled_score >= AUTH_SCORE_THRESHOLD
+    matches_ok = match_count >= MIN_MATCHES
+    ok = score_ok and matches_ok
     if verbose:
         print(
             f"Match score: {scaled_score:.2f} "
-            f"(matches ~{match_count}, threshold score>={AUTH_SCORE_THRESHOLD}, "
-            f"matches>={MIN_MATCHES})",
+            f"(~{match_count} matches after RANSAC; "
+            f"need score>={AUTH_SCORE_THRESHOLD}, matches>={MIN_MATCHES})",
             flush=True,
         )
+        if not ok:
+            if not score_ok:
+                print(
+                    f"fail: score {scaled_score:.2f} < {AUTH_SCORE_THRESHOLD} "
+                    "(finger position/pressure may differ, or enroll/auth images differ).",
+                    flush=True,
+                )
+            if not matches_ok:
+                print(
+                    f"fail: ~{match_count} matches < {MIN_MATCHES}.",
+                    flush=True,
+                )
     return scaled_score, ok
 
 
@@ -186,5 +208,5 @@ if __name__ == "__main__":
     if score is None:
         print("fail")
     else:
-        print(score)
+        print(f"{score:.2f}")
         print("success" if ok else "fail")

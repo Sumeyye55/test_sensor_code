@@ -7,5 +7,7 @@ DEFAULT_USER_ID = "user_001"
 
 # Reject stripe/corrupt captures with too few SIFT features.
 MIN_KEYPOINTS = 50
-MIN_MATCHES = 10
-AUTH_SCORE_THRESHOLD = 8.0
+MIN_MATCHES = 8
+# Notebook .tif scans ~8+; GT-521 live captures are often 4–7 for the same finger.
+# Raise if strangers still pass; lower if your own finger fails (try 4.0–6.0).
+AUTH_SCORE_THRESHOLD = 5.0
