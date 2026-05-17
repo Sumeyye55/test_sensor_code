@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import struct
 import time
 from typing import BinaryIO
@@ -27,26 +26,23 @@ _CMD_CLOSE = 0x02
 _CMD_CMOS_LED = 0x12
 _CMD_IS_PRESS = 0x26
 _CMD_CAPTURE = 0x60
-_CMD_GET_IMAGE = 0x62  # processed fingerprint image (258×202 on GT-521Fxx)
-_CMD_GET_RAW_IMAGE = 0x63  # raw optical image (often 160×120 QVGA)
+_CMD_GET_IMAGE = 0x63
 
 _ACK = 0x30
 _NACK = 0x31
 
-# Default: GetImage 258×202. Set USE_RAW_IMAGE=1 env for 160×120 raw (0x63).
-_IMAGE_WIDTH = 258
-_IMAGE_HEIGHT = 202
-_IMAGE_BYTES = _IMAGE_WIDTH * _IMAGE_HEIGHT  # 52116
-_RAW_WIDTH = 160
-_RAW_HEIGHT = 120
-_RAW_BYTES = _RAW_WIDTH * _RAW_HEIGHT  # 19200
-
-_DATA_PAYLOAD = 128
-_DATA_PACKETS = 407
-_IMAGE_EXTRA = _IMAGE_BYTES - (_DATA_PACKETS * _DATA_PAYLOAD)
+_IMAGE_WIDTH = 160
+_IMAGE_HEIGHT = 120
+_IMAGE_BYTES = _IMAGE_WIDTH * _IMAGE_HEIGHT  # 258 * 202 = 52116
+_DATA_PAYLOAD = 128  # usual payload per UART chunk
+_DATA_PACKETS = 407  # ~407 chunks (datasheet); 407*128=52096, image needs +20 bytes
+_IMAGE_EXTRA = _IMAGE_BYTES - (_DATA_PACKETS * _DATA_PAYLOAD)  # 20
+# Framed wire sizes on the UART line (header/checksum + 128-byte payload, or 148 on 1st)
 _DATA_FRAMED_SIZES = (134, 138, 148, 168)
-_WIRE_BYTES_TARGET = _IMAGE_BYTES + 6
-_WIRE_BYTES_MAX = _DATA_PACKETS * 134
+# Observed on GT-521F52 @ 9600: ~52122 wire bytes = 6-byte header + 52116 image
+_WIRE_BYTES_TARGET = _IMAGE_BYTES + 6  # 52122
+# Upper bound if the module sends fully framed 407 packets (407 × 134)
+_WIRE_BYTES_MAX = _DATA_PACKETS * 134  # 54538
 
 
 def _log(message: str, *, verbose: bool) -> None:
@@ -313,37 +309,16 @@ def capture_grayscale(
     finger_wait_seconds: float = 30.0,
     high_quality: bool = True,
     verbose: bool = True,
-    use_raw_image: bool | None = None,
 ) -> np.ndarray:
     """
-    Capture a grayscale fingerprint image from a GT-521Fxx sensor.
+    Capture a 258x202 grayscale image from a GT-521Fxx sensor.
 
-    use_raw_image=True  -> GetRawImage (0x63), 160×120, direct byte read.
-    use_raw_image=False -> GetImage (0x62), 258×202, framed UART stream.
-    Default: env GT521_USE_RAW_IMAGE=1 enables raw mode.
+    Typical use on Raspberry Pi: port="/dev/ttyUSB1".
     """
-    if use_raw_image is None:
-        use_raw_image = os.getenv("GT521_USE_RAW_IMAGE", "").strip() in (
-            "1",
-            "true",
-            "yes",
-        )
-
     # 9600 baud + ~55 KB image data needs well over 30s on the wire.
     image_timeout = max(timeout, 90.0)
-    if use_raw_image:
-        width, height, nbytes, cmd = _RAW_WIDTH, _RAW_HEIGHT, _RAW_BYTES, _CMD_GET_RAW_IMAGE
-        mode = "raw 160×120 (GetRawImage)"
-    else:
-        width, height, nbytes, cmd = (
-            _IMAGE_WIDTH,
-            _IMAGE_HEIGHT,
-            _IMAGE_BYTES,
-            _CMD_GET_IMAGE,
-        )
-        mode = "processed 258×202 (GetImage)"
 
-    _log(f"Connecting to sensor on {port} @ {baud} baud [{mode}]...", verbose=verbose)
+    _log(f"Connecting to sensor on {port} @ {baud} baud...", verbose=verbose)
 
     with serial.Serial(port, baudrate=baud, timeout=timeout) as ser:
         ok, _ = _send_command(ser, _CMD_OPEN)
@@ -395,17 +370,14 @@ def capture_grayscale(
             _log("Scan captured.", verbose=verbose)
 
             _log("Starting image download from sensor...", verbose=verbose)
-            ok, _ = _send_command(ser, cmd)
+            ok, _ = _send_command(ser, _CMD_GET_IMAGE)
             if not ok:
-                raise RuntimeError("Image download command was rejected by the sensor.")
+                raise RuntimeError("GetImage command was rejected by the sensor.")
 
-            if use_raw_image:
-                raw = _read_exact(ser, nbytes, image_timeout)
-            else:
-                raw = _read_image_stream(ser, image_timeout, verbose=verbose)
-
+            raw = _read_exact(ser, _IMAGE_BYTES, image_timeout)
             _log(
-                f"Image download complete ({len(raw)} bytes, {width}x{height}).",
+                f"Image download complete ({len(raw)} bytes, "
+                f"{_IMAGE_WIDTH}x{_IMAGE_HEIGHT}).",
                 verbose=verbose,
             )
         finally:
@@ -414,7 +386,7 @@ def capture_grayscale(
             _safe_command(ser, _CMD_CLOSE)
 
     _log("Done. You can lift your finger.", verbose=verbose)
-    return np.frombuffer(raw, dtype=np.uint8).reshape(height, width)
+    return np.frombuffer(raw, dtype=np.uint8).reshape(_IMAGE_HEIGHT, _IMAGE_WIDTH)
 
 
 def capture_bgr(

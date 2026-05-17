@@ -68,18 +68,9 @@ def register_user(
     port: str = SERIAL_PORT,
     baud: int = BAUD_RATE,
     verbose: bool = True,
-    save_image: str | None = None,
 ) -> tuple[int, int]:
     image = capture_fingerprint_bgr(port=port, baud=baud, verbose=verbose)
-    if save_image:
-        cv2.imwrite(save_image, image)
-        if verbose:
-            print(f"Saved capture used for enrollment: {save_image}", flush=True)
     if verbose:
-        print(
-            f"Capture shape: {image.shape[1]}x{image.shape[0]} (HxW x channels)",
-            flush=True,
-        )
         print("Extracting SIFT features...", flush=True)
     keypoints, descriptors = extract_features(image)
     if verbose:
@@ -115,11 +106,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default=SERIAL_PORT)
     parser.add_argument("--baud", type=int, default=BAUD_RATE)
     parser.add_argument("--db-path", default=DB_PATH)
-    parser.add_argument(
-        "--save-image",
-        default=None,
-        help="Optional path to save the exact image used for enrollment (e.g. enroll_ali.png).",
-    )
     return parser.parse_args()
 
 
@@ -130,7 +116,6 @@ if __name__ == "__main__":
         args.db_path,
         port=args.port,
         baud=args.baud,
-        save_image=args.save_image,
     )
     print(
         f"User '{args.user_id}' registered from sensor. "
