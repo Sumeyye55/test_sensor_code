@@ -9,8 +9,9 @@ from cryptography.fernet import Fernet
 from config import BAUD_RATE, DB_PATH, DEFAULT_USER_ID, SERIAL_PORT
 from registration import capture_fingerprint_bgr, extract_features
 
-# Match score is len(matches)/min(keypoints)*100. >= 1.0: accept, < 1.0: reject.
-AUTH_SCORE_THRESHOLD = 1.0
+# Match score is len(matches)/min(keypoints)*100. Tune after self vs other-finger tests.
+# 1.0 is very weak — stripe/noise images can match anyone.
+AUTH_SCORE_THRESHOLD = 8.0
 
 
 def _get_cipher() -> Fernet:
@@ -102,9 +103,18 @@ def authenticate(
     port: str = SERIAL_PORT,
     baud: int = BAUD_RATE,
     verbose: bool = True,
+    save_image: str | None = None,
 ) -> tuple[float | None, bool]:
     probe_image = capture_fingerprint_bgr(port=port, baud=baud, verbose=verbose)
+    if save_image:
+        cv2.imwrite(save_image, probe_image)
+        if verbose:
+            print(f"Saved capture used for probe: {save_image}", flush=True)
     if verbose:
+        print(
+            f"Probe shape: {probe_image.shape[1]}x{probe_image.shape[0]}",
+            flush=True,
+        )
         print("Extracting SIFT features from probe...", flush=True)
     probe_keypoints, probe_descriptors = extract_features(probe_image)
     if verbose:
@@ -133,6 +143,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default=SERIAL_PORT)
     parser.add_argument("--baud", type=int, default=BAUD_RATE)
     parser.add_argument("--db-path", default=DB_PATH)
+    parser.add_argument(
+        "--save-image",
+        default=None,
+        help="Optional path to save the probe image (e.g. probe_ali.png).",
+    )
     return parser.parse_args()
 
 
@@ -143,6 +158,7 @@ if __name__ == "__main__":
         args.db_path,
         port=args.port,
         baud=args.baud,
+        save_image=args.save_image,
     )
     if score is None:
         print("fail")
