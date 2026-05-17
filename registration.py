@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from cryptography.fernet import Fernet
 
-from config import BAUD_RATE, DB_PATH, DEFAULT_USER_ID, SERIAL_PORT
+from config import BAUD_RATE, DB_PATH, DEFAULT_USER_ID, MIN_KEYPOINTS, SERIAL_PORT
 
 
 def capture_fingerprint_bgr(
@@ -68,11 +68,22 @@ def register_user(
     port: str = SERIAL_PORT,
     baud: int = BAUD_RATE,
     verbose: bool = True,
+    save_capture_path: str | None = None,
 ) -> tuple[int, int]:
     image = capture_fingerprint_bgr(port=port, baud=baud, verbose=verbose)
+    if save_capture_path:
+        cv2.imwrite(save_capture_path, image)
+        if verbose:
+            print(f"Saved sensor capture to {save_capture_path}", flush=True)
     if verbose:
         print("Extracting SIFT features...", flush=True)
     keypoints, descriptors = extract_features(image)
+    if keypoints.shape[0] < MIN_KEYPOINTS or descriptors.shape[0] < MIN_KEYPOINTS:
+        raise ValueError(
+            f"Only {keypoints.shape[0]} keypoints detected (need >={MIN_KEYPOINTS}). "
+            "Sensor image looks invalid — fix gt521_capture.py, verify with "
+            "python3 gt521_capture.py --output test.png, then register again."
+        )
     if verbose:
         print(f"Saving encrypted features for '{user_id}'...", flush=True)
     cipher = _get_cipher()
@@ -106,6 +117,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default=SERIAL_PORT)
     parser.add_argument("--baud", type=int, default=BAUD_RATE)
     parser.add_argument("--db-path", default=DB_PATH)
+    parser.add_argument(
+        "--save-capture",
+        default=None,
+        help="Optional PNG path to save the exact image sent to SIFT (for debugging).",
+    )
     return parser.parse_args()
 
 
@@ -116,6 +132,7 @@ if __name__ == "__main__":
         args.db_path,
         port=args.port,
         baud=args.baud,
+        save_capture_path=args.save_capture,
     )
     print(
         f"User '{args.user_id}' registered from sensor. "

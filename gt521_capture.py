@@ -374,7 +374,7 @@ def capture_grayscale(
             if not ok:
                 raise RuntimeError("GetImage command was rejected by the sensor.")
 
-            raw = _read_exact(ser, _IMAGE_BYTES, image_timeout)
+            raw = _read_image_stream(ser, image_timeout, verbose=verbose)
             _log(
                 f"Image download complete ({len(raw)} bytes, "
                 f"{_IMAGE_WIDTH}x{_IMAGE_HEIGHT}).",

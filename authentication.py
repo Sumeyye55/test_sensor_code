@@ -6,11 +6,16 @@ import cv2
 import numpy as np
 from cryptography.fernet import Fernet
 
-from config import BAUD_RATE, DB_PATH, DEFAULT_USER_ID, SERIAL_PORT
+from config import (
+    AUTH_SCORE_THRESHOLD,
+    BAUD_RATE,
+    DB_PATH,
+    DEFAULT_USER_ID,
+    MIN_KEYPOINTS,
+    MIN_MATCHES,
+    SERIAL_PORT,
+)
 from registration import capture_fingerprint_bgr, extract_features
-
-# Match score is len(matches)/min(keypoints)*100. >= 1.0: accept, < 1.0: reject.
-AUTH_SCORE_THRESHOLD = 1.0
 
 
 def _get_cipher() -> Fernet:
@@ -102,8 +107,13 @@ def authenticate(
     port: str = SERIAL_PORT,
     baud: int = BAUD_RATE,
     verbose: bool = True,
+    save_capture_path: str | None = None,
 ) -> tuple[float | None, bool]:
     probe_image = capture_fingerprint_bgr(port=port, baud=baud, verbose=verbose)
+    if save_capture_path:
+        cv2.imwrite(save_capture_path, probe_image)
+        if verbose:
+            print(f"Saved probe capture to {save_capture_path}", flush=True)
     if verbose:
         print("Extracting SIFT features from probe...", flush=True)
     probe_keypoints, probe_descriptors = extract_features(probe_image)
@@ -115,13 +125,36 @@ def authenticate(
         return None, False
 
     db_keypoints, db_descriptors = stored
+    if (
+        len(probe_keypoints) < MIN_KEYPOINTS
+        or len(db_keypoints) < MIN_KEYPOINTS
+        or len(probe_descriptors) < MIN_KEYPOINTS
+        or len(db_descriptors) < MIN_KEYPOINTS
+    ):
+        if verbose:
+            print(
+                f"Too few features (need >={MIN_KEYPOINTS} keypoints). "
+                "Sensor image may be corrupt — check capture PNG.",
+                flush=True,
+            )
+        return 0.0, False
+
     ratio = compute_match_score(
         probe_keypoints, probe_descriptors, db_keypoints, db_descriptors
     )
     scaled_score = ratio * 100.0
-    ok = scaled_score >= AUTH_SCORE_THRESHOLD
+    match_count = int(round(ratio * min(len(probe_keypoints), len(db_keypoints))))
+    ok = (
+        scaled_score >= AUTH_SCORE_THRESHOLD
+        and match_count >= MIN_MATCHES
+    )
     if verbose:
-        print(f"Match score: {scaled_score:.2f} (threshold {AUTH_SCORE_THRESHOLD})", flush=True)
+        print(
+            f"Match score: {scaled_score:.2f} "
+            f"(matches ~{match_count}, threshold score>={AUTH_SCORE_THRESHOLD}, "
+            f"matches>={MIN_MATCHES})",
+            flush=True,
+        )
     return scaled_score, ok
 
 
@@ -133,6 +166,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", default=SERIAL_PORT)
     parser.add_argument("--baud", type=int, default=BAUD_RATE)
     parser.add_argument("--db-path", default=DB_PATH)
+    parser.add_argument(
+        "--save-capture",
+        default=None,
+        help="Optional PNG path to save the probe image used for matching.",
+    )
     return parser.parse_args()
 
 
@@ -143,6 +181,7 @@ if __name__ == "__main__":
         args.db_path,
         port=args.port,
         baud=args.baud,
+        save_capture_path=args.save_capture,
     )
     if score is None:
         print("fail")
